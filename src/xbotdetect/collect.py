@@ -12,6 +12,7 @@ from typing import Any, TypeVar
 
 from .analysis.account import account_signals
 from .analysis.config import AnalysisConfig
+from .analysis.network import bursts_for
 from .analysis.scoring import combine
 from .dataset import Dataset
 from .models import Account, Engagement
@@ -40,8 +41,8 @@ class CollectOptions:
     expand: int = 30  # neighbours whose own following list is fetched (0 = no 2nd-degree graph)
     expand_following: int = 400  # following entries per expanded neighbour
     expand_about: bool = True
-    expand_timeline: int = 0
-    expand_scope: str = "recent"  # recent: only accounts created after recent_since; all: any
+    expand_timeline: int = 20  # one timeline page per expanded neighbour (co-amplification)
+    expand_scope: str = "all"  # all: any age (aged farms too); recent: only young accounts
     min_candidate_followers: int = 200
     concurrency: int = 4
 
@@ -144,9 +145,20 @@ class Collector:
             self.ds.timelines[acc.id] = batch.posts
             log.info("@%s: %d timeline items", acc.handle, len(batch.posts))
 
+    def _burst_windows(self) -> list[tuple[float, float]]:
+        """Creation bursts (any year) among the seeds' followers and followed accounts."""
+        windows: list[tuple[float, float]] = []
+        for lists in (self.ds.followers, self.ds.following):
+            for sid in self.ds.seed_ids:
+                dates = [self.ds.accounts[i].created_at for i in lists.get(sid, []) if i in self.ds.accounts]
+                for b in bursts_for(dates, self.ds.as_of, self.cfg):
+                    if not b.fresh_signups:
+                        windows.append((b.start.timestamp(), b.end.timestamp()))
+        return windows
+
     def candidates(self, k: int) -> list[Account]:
-        """Rank seed neighbours for 2nd-degree expansion: recent, sizeable, mutual with a seed,
-        shared between seeds, and bot-like on metadata."""
+        """Rank seed neighbours for 2nd-degree expansion: inside a creation burst, mutual with a
+        seed, shared between seeds, bot-like on metadata, sizeable, young."""
         seeds = set(self.ds.seed_ids)
         seen_in: dict[str, int] = {}
         mutual: set[str] = set()
@@ -156,6 +168,7 @@ class Collector:
             mutual |= fol & fing
             for i in fol | fing:
                 seen_in[i] = seen_in.get(i, 0) + 1
+        windows = self._burst_windows()
         priority: dict[str, float] = {}
         for aid, n_seeds in seen_in.items():
             if aid in seeds or aid in self.ds.expanded_ids:
@@ -169,11 +182,14 @@ class Collector:
             if (acc.followers or 0) < self.opts.min_candidate_followers:
                 continue
             meta = combine(account_signals(acc, self.ds.as_of, self.cfg))
+            ts = acc.created_at.timestamp() if acc.created_at else None
+            in_burst = ts is not None and any(a <= ts <= b for a, b in windows)
             priority[aid] = (
                 meta
                 + (0.35 if aid in mutual else 0.0)
+                + (0.35 if in_burst else 0.0)
                 + 0.2 * min(n_seeds - 1, 3)
-                + (0.15 if recent else 0.0)
+                + (0.1 if recent else 0.0)
                 + (0.1 if (acc.followers or 0) >= 1000 else 0.0)
             )
         # Round-robin over seeds so one big neighbourhood doesn't take the whole budget.
@@ -213,10 +229,10 @@ async def collect(
     cfg: AnalysisConfig | None = None,
 ) -> Dataset:
     opts = opts or CollectOptions()
-    cfg = cfg or AnalysisConfig()
     started = time.monotonic()
-    col = Collector(source, opts, cfg)
-    col.ds.as_of = utcnow()
+    as_of = utcnow()
+    cfg = (cfg or AnalysisConfig()).resolve(as_of)
+    col = Collector(source, opts, cfg, Dataset(as_of=as_of))
     seeds = await col.seeds(handles)
     if opts.about and seeds:
         await col.about(seeds)

@@ -169,8 +169,8 @@ def _roles(ds: Dataset) -> dict[str, list[str]]:
 
 
 def analyze(ds: Dataset, cfg: AnalysisConfig | None = None) -> Report:
-    cfg = cfg or AnalysisConfig()
     as_of = ds.as_of
+    cfg = (cfg or AnalysisConfig()).resolve(as_of)
 
     # 1. Metadata + behaviour signals for every account we have a record of.
     base: dict[str, list[Signal]] = {}
@@ -181,7 +181,7 @@ def analyze(ds: Dataset, cfg: AnalysisConfig | None = None) -> Report:
         if posts:
             m = timeline_metrics(acc, posts)
             behavior[aid] = m
-            sig += behavior_signals(m)
+            sig += behavior_signals(m, acc, as_of)
         base[aid] = sig
     meta_scores = {aid: combine(sig) for aid, sig in base.items()}
 

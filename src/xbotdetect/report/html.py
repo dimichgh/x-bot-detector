@@ -51,7 +51,7 @@ a{color:var(--s1)}.sub{color:var(--ink-2);margin:0}.muted{color:var(--muted)}
 .chart .tick{fill:var(--muted);font-size:11px;font-variant-numeric:tabular-nums}
 .chart .halo{paint-order:stroke;stroke:var(--surface);stroke-width:4px;stroke-linejoin:round;fill:var(--ink-2)}
 .chart .pt{fill:var(--s1);opacity:.75}.chart .pt.new{fill:var(--s2)}.chart .pt:hover{opacity:1;r:5}
-.chart .band{fill:var(--s2-wash);stroke:var(--s2);stroke-width:1}.chart .band.fresh{fill:var(--s1-wash);stroke:var(--muted)}
+.chart .band{fill:var(--s2-wash);stroke:var(--s2);stroke-width:1}.chart .burst{fill:var(--s2-wash)}.chart .burst.fresh{fill:var(--s1-wash)}.chart .band.fresh{fill:var(--s1-wash);stroke:var(--muted)}
 .chart .bar{fill:var(--s1)}.chart .bar.new{fill:var(--s2)}.chart .bar:hover{opacity:.8}
 .net .edge{stroke:var(--axis);stroke-width:1}.net .edge.mutual{stroke:var(--ink-2);stroke-width:2}.net .edge.seedlink{stroke:var(--grid);stroke-width:1}
 .net .node{stroke:var(--surface);stroke-width:2}.net .node.seed{stroke:var(--ink);stroke-width:2.5}
@@ -133,8 +133,18 @@ def _seed_card(report: Report, res: AccountResult) -> str:
             f"<h3>{'Followers' if rel == 'followers' else 'Accounts it follows'}: {fmt_int(nb.sampled)} sampled"
             f"{f' of {fmt_int(nb.total)}' if nb.total else ''}</h3>"
         )
+        cfg = report.config
+        hard_bursts = [b for b in nb.bursts if not b.fresh_signups]
         stats = [
-            f"{nb.recent_share:.0%} created after {fmt_date(report.config.recent_since)}",
+            f"{nb.recent_share:.0%} {cfg.young_label} (created after {fmt_date(cfg.recent_since)})",
+            f"{len(hard_bursts)} creation burst(s) (any year), {nb.burst_excess:.1%} of the sample beyond background"
+            + (
+                "; largest: "
+                + f"{hard_bursts[0].count} created {fmt_date(hard_bursts[0].start)} - {fmt_date(hard_bursts[0].end)} "
+                + f"vs ~{hard_bursts[0].expected:.1f} expected (p={hard_bursts[0].p_value:.0e})"
+                if hard_bursts
+                else ""
+            ),
             f"densest {report.config.creation_window_days}-day creation window: {nb.peak.share:.0%} "
             f"({fmt_date(nb.peak.start)} - {fmt_date(nb.peak.end)}); excluding fresh sign-ups: {nb.aged_peak.share:.0%}",
             f"{nb.botlike_share:.0%} bot-like on metadata",
@@ -144,12 +154,13 @@ def _seed_card(report: Report, res: AccountResult) -> str:
         ]
         out.append('<ul class="plain">' + "".join(f"<li>{esc(s)}</li>" for s in stats if s) + "</ul>")
         if rel == "followers":
-            chart = svg.follower_map(nb, ds.as_of, report.config.recent_since)
+            chart = svg.follower_map(nb, ds.as_of, cfg.recent_since, young_label=cfg.young_label)
             if chart:
                 out.append(
-                    '<div class="legend"><span><i class="sw s1"></i>Follower created before new wave</span>'
-                    '<span><i class="sw s2"></i>Created in new wave</span><span>Shaded boxes = bands of consecutive '
-                    "followers created together</span></div>" + chart
+                    '<div class="legend"><span><i class="sw s1"></i>Older follower</span>'
+                    f'<span><i class="sw s2"></i>Young follower ({esc(cfg.young_label)})</span>'
+                    "<span>Boxes = bands of consecutive followers created together</span>"
+                    "<span>Horizontal stripes = creation bursts</span></div>" + chart
                 )
         out.append(
             svg.creation_histogram(
@@ -201,7 +212,7 @@ def _clusters(report: Report) -> str:
         )
     return (
         '<div class="tbl"><table><thead><tr><th>Cluster</th><th>Score</th><th>Size</th><th>Density</th><th>Mutual</th>'
-        f"<th>Created within {report.config.creation_window_days}d</th><th>New wave</th><th>Members</th></tr></thead><tbody>"
+        f"<th>Created within {report.config.creation_window_days}d</th><th>Young</th><th>Members</th></tr></thead><tbody>"
         + "".join(rows)
         + "</tbody></table></div>"
     )
@@ -229,7 +240,7 @@ def _pairs(report: Report) -> str:
     if g:
         pk = g["peak"]
         head = (
-            f"<p>{g['seeds']} seeds created {g['earliest'][:10]} - {g['latest'][:10]}; {g['recent_share']:.0%} in the new wave"
+            f"<p>{g['seeds']} seeds created {g['earliest'][:10]} - {g['latest'][:10]}; {g['recent_share']:.0%} {report.config.young_label}"
             + (
                 f"; {pk['count']} of them created within {report.config.creation_window_days} days of each other"
                 if pk["count"] >= 2
@@ -278,7 +289,7 @@ def _engagements(report: Report) -> str:
             f'<section class="card"><div class="row"><h3 style="margin:0">Post <a href="https://x.com/i/status/{esc(e.tweet_id)}">'
             f"{esc(e.tweet_id)}</a></h3>{_badge(e.level)}<span class='score'>{e.score * 100:.0f}</span></div>"
             f"<p class='sub'>{e.engagers} engaging accounts ({e.reposters} reposters, {e.repliers} repliers); "
-            f"{e.recent_share:.0%} new-wave; densest {report.config.creation_window_days}-day creation window {e.peak.share:.0%}; "
+            f"{e.recent_share:.0%} {report.config.young_label}; densest {report.config.creation_window_days}-day creation window {e.peak.share:.0%}; "
             f"median reply delay {e.median_reply_delay_min if e.median_reply_delay_min is not None else '?'} min</p>"
             + _signals(None, e.signals)
             + svg.creation_histogram(

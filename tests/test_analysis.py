@@ -188,3 +188,101 @@ def test_report_serialises(farm_world, tmp_path):
     assert html.count("<svg") >= 3 and "prefers-color-scheme:dark" in html
     data = json.loads((tmp_path / "report.json").read_text())
     assert data["seeds"][0]["handle"] == "TargetAccount" and data["clusters"]
+
+
+def test_burst_statistics():
+    import random
+
+    from xbotdetect.analysis.temporal import binom_sf, creation_bursts, poisson_sf
+
+    assert abs(poisson_sf(5, 0.5) - 1.7212e-4) < 1e-7
+    assert abs(binom_sf(2, 10, 0.5) - (1 - 11 / 1024)) < 1e-9
+    rng = random.Random(3)
+    organic = [datetime(2009, 1, 1, tzinfo=UTC) + timedelta(days=rng.uniform(0, 6200)) for _ in range(2000)]
+    # A smooth platform-wide sign-up wave is not a farm.
+    organic += [datetime(2022, 11, 1, tzinfo=UTC) + timedelta(days=rng.uniform(0, 120)) for _ in range(300)]
+    assert creation_bursts(organic, AS_OF) == []
+    farm = [datetime(2016, 3, 3, tzinfo=UTC) + timedelta(hours=rng.uniform(0, 96)) for _ in range(40)]
+    bursts = creation_bursts(organic + farm, AS_OF)
+    assert len(bursts) == 1 and bursts[0].start.year == 2016 and bursts[0].count >= 40
+    assert bursts[0].p_value < 1e-20 and not bursts[0].fresh_signups
+
+
+def test_young_is_relative_and_campaign_window_optional():
+    acc = Account(
+        id="9",
+        handle="x",
+        created_at=AS_OF - timedelta(days=500),
+        followers=10,
+        following=10,
+        description="d",
+        source="fxtwitter",
+        banner_url="b",
+    )
+    rel = AnalysisConfig().resolve(AS_OF)
+    assert rel.recent_since == AS_OF - timedelta(days=730)
+    s_rel = next(s for s in account_signals(acc, AS_OF, rel) if s.key == "young_account").score
+    camp = AnalysisConfig(campaign_since=datetime(2024, 10, 1, tzinfo=UTC)).resolve(AS_OF)
+    s_camp = next(s for s in account_signals(acc, AS_OF, camp) if s.key == "young_account").score
+    assert s_rel < 0.5 <= s_camp and camp.recent_since.year == 2024
+
+
+def test_aged_account_renamed_and_reactivated():
+    from xbotdetect.analysis.behavior import behavior_signals
+
+    acc = Account(
+        id="7",
+        handle="SomeName",
+        created_at=datetime(2014, 5, 1, tzinfo=UTC),
+        followers=900,
+        following=800,
+        tweets=2500,
+        description="d",
+        source="fxtwitter",
+        banner_url="b",
+        about=About(username_changes=2, username_last_changed_at=AS_OF - timedelta(days=60)),
+    )
+    sig = {s.key: s for s in account_signals(acc, AS_OF, AnalysisConfig().resolve(AS_OF))}
+    assert sig["username_changes"].score >= 0.7 and "12-year-old" in sig["username_changes"].detail
+    t0 = AS_OF - timedelta(days=2)
+    posts = [
+        Post(
+            id=str(i),
+            author_id="7",
+            author_handle="SomeName",
+            created_at=t0 + timedelta(minutes=50 * i),
+            text=f"post {i} with some words",
+        )
+        for i in range(60)
+    ]
+    m = timeline_metrics(acc, posts)
+    k = keys(behavior_signals(m, acc, AS_OF))
+    assert "reactivated" in k  # ~29/day now vs ~0.6/day over 12 years
+
+
+def test_aged_farm_detected_without_any_year_assumption(aged_farm_world):
+    r = analyze(aged_farm_world)
+    seed = r.seeds[0]
+    k = keys(seed.signals)
+    assert {"follower_creation_burst", "follower_map_bands", "in_suspicious_cluster"} <= k
+    bursts = r.neighborhoods["1"]["followers"].bursts
+    assert all(b.start.year == 2016 for b in bursts)
+    assert sum(b.count for b in bursts) >= 75  # 80 accounts over 10 days -> adjacent 7-day bursts
+    top = max((c for c in r.clusters if c.kind == "neighbours"), key=lambda c: c.score)
+    assert top.score >= 0.5 and all(int(m) >= 50_000 for m in top.members)
+    assert any(s.key == "templated_profiles" for s in top.signals)  # every farm account is named "Anna"
+
+
+async def test_expansion_reaches_aged_farm(tmp_path, aged_farm_world):
+    from xbotdetect.collect import CollectOptions, collect
+    from xbotdetect.sources.offline import OfflineSource
+
+    src = OfflineSource(aged_farm_world)
+    opts = CollectOptions(followers=400, following=200, timeline=0, expand=20, expand_timeline=0)
+    ds = await collect(src, ["TargetAccount"], opts)
+    farm_expanded = [i for i in ds.expanded_ids if int(i) >= 50_000]
+    assert len(farm_expanded) >= 15  # burst members are prioritised even though they are 10 years old
+    old = await collect(
+        src, ["TargetAccount"], CollectOptions(**{**opts.to_dict(), "expand_scope": "recent"})
+    )
+    assert not [i for i in old.expanded_ids if int(i) >= 50_000]  # the old date-gated behaviour misses them

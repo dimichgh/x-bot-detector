@@ -14,9 +14,20 @@ import networkx as nx
 
 from ..dataset import Dataset
 from ..util import days_between, fmt_date, iso, ramp
+from .behavior import normalize_text
 from .config import AnalysisConfig
 from .scoring import Signal, combine, level
-from .temporal import Band, Peak, creation_peak, follower_map_bands, monthly_histogram, recent_share
+from .temporal import (
+    Band,
+    Burst,
+    Peak,
+    burst_excess,
+    creation_bursts,
+    creation_peak,
+    follower_map_bands,
+    monthly_histogram,
+    recent_share,
+)
 
 
 @dataclass
@@ -25,10 +36,12 @@ class Neighborhood:
     relation: str  # "followers" | "following"
     sampled: int
     total: int | None
-    recent_share: float
+    recent_share: float  # share of "young" accounts (see AnalysisConfig.young_days)
     peak: Peak
     aged_peak: Peak  # excluding fresh sign-ups (possible X onboarding)
     peak90: Peak
+    bursts: list[Burst]
+    burst_excess: float  # share of the sample in non-fresh creation bursts, beyond background
     bands: list[Band]
     band_share: float  # share of sample inside non-fresh bands
     botlike_share: float
@@ -47,12 +60,25 @@ class Neighborhood:
             "peak": self.peak.to_dict(),
             "aged_peak": self.aged_peak.to_dict(),
             "peak90": self.peak90.to_dict(),
+            "bursts": [b.to_dict() for b in self.bursts],
+            "burst_excess": round(self.burst_excess, 4),
             "bands": [b.to_dict() for b in self.bands],
             "band_share": round(self.band_share, 4),
             "botlike_share": round(self.botlike_share, 4),
             "median_age_days": self.median_age_days,
             "monthly": self.monthly,
         }
+
+
+def bursts_for(dates: list[datetime | None], as_of: datetime, cfg: AnalysisConfig) -> list[Burst]:
+    return creation_bursts(
+        dates,
+        as_of,
+        window_days=cfg.burst_window_days,
+        background_days=cfg.burst_background_days,
+        alpha=cfg.burst_alpha,
+        fresh_days=cfg.fresh_signup_days,
+    )
 
 
 def neighborhood(
@@ -79,7 +105,9 @@ def neighborhood(
         min_fraction=cfg.band_min_fraction,
         min_lift=cfg.band_min_lift,
         fresh_days=cfg.fresh_signup_days,
+        alpha=cfg.burst_alpha,
     )
+    bursts = bursts_for(dates, as_of, cfg)
     n_known = max(len(dates), 1)
     scored = [meta_scores[i] for i in ids if i in meta_scores]
     seed = ds.accounts.get(seed_id)
@@ -93,6 +121,8 @@ def neighborhood(
         peak=creation_peak(dates, cfg.creation_window_days),
         aged_peak=creation_peak(aged, cfg.creation_window_days),
         peak90=creation_peak(dates, 90),
+        bursts=bursts,
+        burst_excess=burst_excess(bursts),
         bands=bands,
         band_share=sum(b.size for b in bands if not b.fresh_signups) / n_known,
         botlike_share=(sum(s >= cfg.botlike_threshold for s in scored) / len(scored)) if scored else 0.0,
@@ -110,53 +140,67 @@ def mutual_share(ds: Dataset, seed_id: str) -> float | None:
     return len(set(fol) & set(fing)) / len(fing)
 
 
+def burst_text(b: Burst) -> str:
+    return (
+        f"{b.count} accounts created {fmt_date(b.start)} - {fmt_date(b.end)} vs ~{b.expected:.1f} expected "
+        f"from the surrounding months (p={b.p_value:.0e})"
+    )
+
+
+def burst_strength(nb: Neighborhood) -> float:
+    hard = [b for b in nb.bursts if not b.fresh_signups]
+    if not hard:
+        return 0.0
+    # Magnitude (share of the sample) with a floor for any large, unambiguous batch.
+    return max(ramp(nb.burst_excess, 0.01, 0.10), 0.35 if max(b.count for b in hard) >= 20 else 0.0)
+
+
 def seed_network_signals(
     followers: Neighborhood | None, following: Neighborhood | None, mutual: float | None, cfg: AnalysisConfig
 ) -> list[Signal]:
     sig: list[Signal] = []
     if followers and followers.sampled >= 50:
         nb = followers
-        p = nb.aged_peak
-        if p.total >= 30:
-            s = ramp(p.share, 0.15, 0.45)
-            if s > 0:
-                sig.append(
-                    Signal(
-                        "follower_creation_spike",
-                        "Followers created together",
-                        s,
-                        0.35,
-                        f"{p.share:.0%} of {p.total} sampled followers (excl. fresh sign-ups) were created within "
-                        f"{cfg.creation_window_days} days ({fmt_date(p.start)} - {fmt_date(p.end)})",
-                        "network",
-                    )
+        s = burst_strength(nb)
+        if s > 0:
+            hard = [b for b in nb.bursts if not b.fresh_signups]
+            sig.append(
+                Signal(
+                    "follower_creation_burst",
+                    "Followers created in batches",
+                    s,
+                    0.4,
+                    f"{len(hard)} creation burst(s) among {nb.sampled} sampled followers, "
+                    f"{nb.burst_excess:.1%} of them beyond background; largest: {burst_text(hard[0])}",
+                    "network",
                 )
+            )
         s = ramp(nb.recent_share, 0.5, 0.85)
         if s > 0:
             sig.append(
                 Signal(
                     "followers_mostly_new",
-                    "Followers mostly new accounts",
+                    "Followers mostly young accounts",
                     s,
                     0.2,
-                    f"{nb.recent_share:.0%} of sampled followers were created after {fmt_date(cfg.recent_since)}",
+                    f"{nb.recent_share:.0%} of sampled followers are {cfg.young_label}",
                     "network",
                 )
             )
-        hard = [b for b in nb.bands if not b.fresh_signups]
-        if hard:
+        hard_bands = [b for b in nb.bands if not b.fresh_signups]
+        if hard_bands:
             s = ramp(nb.band_share, 0.05, 0.3)
             if s > 0:
-                b = hard[0]
+                b = hard_bands[0]
                 sig.append(
                     Signal(
                         "follower_map_bands",
                         "Follower-map bands",
                         s,
                         0.35,
-                        f"{len(hard)} band(s) of consecutive followers created in the same window; largest: "
+                        f"{len(hard_bands)} band(s) of consecutive followers created in the same window; largest: "
                         f"{b.size} accounts created {fmt_date(b.created_start)} - {fmt_date(b.created_end)} "
-                        f"followed back-to-back ({nb.band_share:.0%} of sample)",
+                        f"followed back-to-back (p={b.p_value:.0e}; {nb.band_share:.0%} of sample)",
                         "network",
                     )
                 )
@@ -172,18 +216,18 @@ def seed_network_signals(
                     "network",
                 )
             )
-    if following and following.sampled >= 50 and following.aged_peak.total >= 30:
-        p = following.aged_peak
-        s = ramp(p.share, 0.2, 0.5)
+    if following and following.sampled >= 50:
+        s = burst_strength(following)
         if s > 0:
+            hard = [b for b in following.bursts if not b.fresh_signups]
             sig.append(
                 Signal(
-                    "following_creation_spike",
-                    "Follows a creation cohort",
+                    "following_creation_burst",
+                    "Follows batch-created accounts",
                     s,
-                    0.25,
-                    f"{p.share:.0%} of accounts it follows were created within {cfg.creation_window_days} days "
-                    f"({fmt_date(p.start)} - {fmt_date(p.end)})",
+                    0.3,
+                    f"{following.burst_excess:.1%} of the accounts it follows sit in creation bursts; largest: "
+                    f"{burst_text(hard[0])}",
                     "network",
                 )
             )
@@ -247,6 +291,9 @@ class Cluster:
     mean_member_score: float
     following_jaccard: float | None
     shared_targets: list[tuple[str, int]]
+    name_dup_share: float | None
+    bio_dup_share: float | None
+    co_amplification: float | None  # mean pairwise Jaccard of reposted posts (needs member timelines)
     signals: list[Signal]
     score: float
     level: str
@@ -277,6 +324,9 @@ class Cluster:
             recent_share=round(self.recent_share, 4),
             mean_member_score=round(self.mean_member_score, 4),
             following_jaccard=None if self.following_jaccard is None else round(self.following_jaccard, 4),
+            name_dup_share=None if self.name_dup_share is None else round(self.name_dup_share, 4),
+            bio_dup_share=None if self.bio_dup_share is None else round(self.bio_dup_share, 4),
+            co_amplification=None if self.co_amplification is None else round(self.co_amplification, 4),
         )
         return d
 
@@ -323,6 +373,7 @@ def cluster_signals(
     cfg: AnalysisConfig,
     baseline: PoolBaseline | None = None,
     gate_composition: bool = True,
+    coordination: list[Signal] | None = None,
 ) -> list[Signal]:
     """Structure (density, mutuality, shared follows) is the evidence; composition (created
     together, new, bot-like) only counts in proportion to how much structure there is."""
@@ -364,6 +415,9 @@ def cluster_signals(
                     "cluster",
                 )
             )
+    for c in coordination or []:  # behavioural/profile coordination counts as structure
+        sig.append(c)
+        structure.append(c.score)
     gate = min(1.0, max(structure) / 0.5) if gate_composition else 1.0
     gate_note = f" (scaled x{gate:.2f}: weak follow structure)" if gate < 1 else ""
 
@@ -393,10 +447,10 @@ def cluster_signals(
         sig.append(
             Signal(
                 "recent_cohort",
-                "New-wave accounts",
+                "Young accounts",
                 s * gate,
                 0.2,
-                f"{recent:.0%} created after {fmt_date(cfg.recent_since)}{gate_note}",
+                f"{recent:.0%} {cfg.young_label}{gate_note}",
                 "cluster",
             )
         )
@@ -413,6 +467,80 @@ def cluster_signals(
             )
         )
     return sig
+
+
+def _trigrams(s: str) -> set[str]:
+    s = f"  {s} "
+    return {s[i : i + 3] for i in range(len(s) - 2)}
+
+
+def near_duplicate_share(
+    texts: list[str], threshold: float = 0.7, min_len: int = 3, max_pairs: int = 5000
+) -> float | None:
+    """Share of text pairs that are near-identical (character-trigram Jaccard >= threshold)."""
+    items = [normalize_text(t) for t in texts]
+    grams = [_trigrams(t) for t in items if len(t) >= min_len]
+    if len(grams) < 3:
+        return None
+    pairs = dup = 0
+    for a, b in combinations(grams, 2):
+        pairs += 1
+        if len(a & b) / len(a | b) >= threshold:
+            dup += 1
+        if pairs >= max_pairs:
+            break
+    return dup / pairs
+
+
+def co_amplification(ds: Dataset, members: list[str]) -> tuple[float, int] | None:
+    sets = [
+        {p.target_post_id for p in ds.timelines[m] if p.kind == "repost" and p.target_post_id}
+        for m in members
+        if m in ds.timelines
+    ]
+    sets = [x for x in sets if x]
+    if len(sets) < 3:
+        return None
+    jac = mean_pairwise_jaccard(sets)
+    return (jac, len(sets)) if jac is not None else None
+
+
+def coordination_signals(ds: Dataset, members: list[str]) -> tuple[list[Signal], dict[str, Any]]:
+    accs = [ds.accounts[m] for m in members if m in ds.accounts]
+    names = near_duplicate_share([a.name for a in accs], threshold=0.8)
+    bios = near_duplicate_share([a.description for a in accs if a.description], threshold=0.6, min_len=12)
+    coamp = co_amplification(ds, members)
+    sig: list[Signal] = []
+    s = max(ramp(names or 0, 0.15, 0.5), ramp(bios or 0, 0.1, 0.4))
+    if s:
+        sig.append(
+            Signal(
+                "templated_profiles",
+                "Templated profiles",
+                s,
+                0.3,
+                f"near-identical display names in {names or 0:.0%} and bios in {bios or 0:.0%} of member pairs",
+                "cluster",
+            )
+        )
+    if coamp:
+        s = ramp(coamp[0], 0.03, 0.2)
+        if s:
+            sig.append(
+                Signal(
+                    "co_amplification",
+                    "Repost the same posts",
+                    s,
+                    0.35,
+                    f"mean pairwise overlap of reposted posts {coamp[0]:.2f} across {coamp[1]} member timelines",
+                    "cluster",
+                )
+            )
+    return sig, {
+        "name_dup_share": names,
+        "bio_dup_share": bios,
+        "co_amplification": coamp[0] if coamp else None,
+    }
 
 
 def _measure(
@@ -457,8 +585,19 @@ def _measure(
             mut = sum(g.has_edge(sid, m) and g.has_edge(m, sid) for m in mem)
             if fol or by:
                 ties[sid] = {"mutual": mut, "follows": fol - mut, "followed_by": by - mut}
+    coord, coord_metrics = coordination_signals(ds, mem)
     sig = cluster_signals(
-        density, recip, p30, p90, rec, mean_score, jac, cfg, baseline, gate_composition=kind == "neighbours"
+        density,
+        recip,
+        p30,
+        p90,
+        rec,
+        mean_score,
+        jac,
+        cfg,
+        baseline,
+        gate_composition=kind == "neighbours",
+        coordination=coord,
     )
     # Shares over 3-5 accounts are coarse evidence; full weight from 6 members up.
     score = combine(sig) * min(1.0, (n - 1) / 5)
@@ -475,6 +614,7 @@ def _measure(
         recent_share=rec,
         mean_member_score=mean_score,
         following_jaccard=jac,
+        **coord_metrics,
         shared_targets=shared,
         signals=sig,
         score=score,

@@ -13,7 +13,15 @@ from ..util import days_between, fmt_date, ramp
 from .behavior import normalize_text
 from .config import AnalysisConfig
 from .scoring import Signal, combine, level
-from .temporal import Peak, creation_peak, monthly_histogram, recent_share
+from .temporal import (
+    Burst,
+    Peak,
+    burst_excess,
+    creation_bursts,
+    creation_peak,
+    monthly_histogram,
+    recent_share,
+)
 
 
 @dataclass
@@ -25,6 +33,7 @@ class EngagementResult:
     repliers: int
     recent_share: float
     peak: Peak
+    bursts: list[Burst]
     botlike_share: float
     median_age_days: float | None
     median_reply_delay_min: float | None
@@ -45,6 +54,7 @@ class EngagementResult:
             "repliers": self.repliers,
             "recent_share": round(self.recent_share, 4),
             "peak": self.peak.to_dict(),
+            "bursts": [b.to_dict() for b in self.bursts],
             "botlike_share": round(self.botlike_share, 4),
             "median_age_days": self.median_age_days,
             "median_reply_delay_min": self.median_reply_delay_min,
@@ -66,6 +76,15 @@ def analyze_engagement(
     accs = [ds.accounts[i] for i in ids if i in ds.accounts]
     dates = [a.created_at for a in accs if a.created_at]
     peak = creation_peak(dates, cfg.creation_window_days)
+    bursts = creation_bursts(
+        dates,
+        ds.as_of,
+        window_days=cfg.burst_window_days,
+        background_days=cfg.burst_background_days,
+        alpha=cfg.burst_alpha,
+        fresh_days=cfg.fresh_signup_days,
+    )
+    hard = [b for b in bursts if not b.fresh_signups]
     rec = recent_share(dates, cfg.recent_since)
     scored = [(i, meta_scores[i]) for i in ids if i in meta_scores]
     botlike = sum(s >= cfg.botlike_threshold for _, s in scored) / len(scored) if scored else 0.0
@@ -106,10 +125,10 @@ def analyze_engagement(
             sig.append(
                 Signal(
                     "engagers_new",
-                    "Engagers mostly new",
+                    "Engagers mostly young",
                     s,
                     0.25,
-                    f"{rec:.0%} of engagers created after {fmt_date(cfg.recent_since)}",
+                    f"{rec:.0%} of engagers are {cfg.young_label}",
                     "engagement",
                 )
             )
@@ -125,6 +144,21 @@ def analyze_engagement(
                     "engagement",
                 )
             )
+    if hard:
+        excess = burst_excess(bursts)
+        s = max(ramp(excess, 0.02, 0.15), 0.35 if hard[0].count >= 15 else 0.0)
+        b = hard[0]
+        sig.append(
+            Signal(
+                "engager_creation_burst",
+                "Engagers created in batches",
+                s,
+                0.35,
+                f"{excess:.0%} of engagers sit in creation bursts; largest: {b.count} accounts created "
+                f"{fmt_date(b.start)} - {fmt_date(b.end)} vs ~{b.expected:.1f} expected (p={b.p_value:.0e})",
+                "engagement",
+            )
+        )
     within5 = None
     if len(delays) >= 10:
         within5 = sum(d <= 5 for d in delays) / len(delays)
@@ -164,6 +198,7 @@ def analyze_engagement(
         repliers=len(set(repliers)),
         recent_share=rec,
         peak=peak,
+        bursts=bursts,
         botlike_share=botlike,
         median_age_days=round(statistics.median(ages), 1) if ages else None,
         median_reply_delay_min=round(statistics.median(delays), 1) if delays else None,

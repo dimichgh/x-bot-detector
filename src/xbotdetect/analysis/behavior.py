@@ -5,10 +5,11 @@ from __future__ import annotations
 import re
 import statistics
 from collections import Counter
+from datetime import datetime
 from typing import Any
 
 from ..models import Account, Post
-from ..util import ramp
+from ..util import days_between, ramp
 from .scoring import Signal
 
 _URL = re.compile(r"https?://\S+")
@@ -71,6 +72,8 @@ def timeline_metrics(owner: Account, posts: list[Post]) -> dict[str, Any]:
         m["active_hours"] = len(set(hours))
         m["max_quiet_gap_hours"] = max_quiet_gap_hours(hours)
         m["span_days"] = round((timed[-1] - timed[0]).total_seconds() / 86400, 2)
+        if len(timed) >= 10 and m["span_days"] >= 1.0:
+            m["recent_posts_per_day"] = round(len(timed) / m["span_days"], 2)
         gaps = [(b - a).total_seconds() for a, b in zip(timed, timed[1:], strict=False)]
         gaps = [g for g in gaps if g > 0]
         if len(gaps) >= 2:
@@ -94,8 +97,28 @@ def timeline_metrics(owner: Account, posts: list[Post]) -> dict[str, Any]:
     return m
 
 
-def behavior_signals(m: dict[str, Any]) -> list[Signal]:
+def behavior_signals(
+    m: dict[str, Any], acc: Account | None = None, as_of: datetime | None = None
+) -> list[Signal]:
     sig: list[Signal] = []
+    recent = m.get("recent_posts_per_day")
+    age = days_between(acc.created_at, as_of) if acc and as_of else None
+    if recent and age and age >= 1095 and acc and acc.tweets is not None:
+        lifetime = acc.tweets / age
+        ratio = recent / max(lifetime, 0.01)
+        s = ramp(ratio, 10, 50) if recent >= 5 else 0.0
+        if s > 0:
+            sig.append(
+                Signal(
+                    "reactivated",
+                    "Dormant account reactivated",
+                    s,
+                    0.3,
+                    f"posting ~{recent:.0f}/day recently vs ~{lifetime:.1f}/day over its {age / 365:.0f}-year life "
+                    f"({ratio:.0f}x); aged accounts are often bought and repurposed",
+                    "behavior",
+                )
+            )
     n = m.get("items", 0)
     if n >= 15 and m.get("repost_share") is not None:
         share = m["repost_share"]

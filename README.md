@@ -1,8 +1,12 @@
 # x-bot-detector
 
 Find **coordinated follow-farm / bot clusters on X (Twitter)**. Give it one handle or a group of
-handles. It looks for the pattern of accounts created in late 2024–2026 that already have large
-follower counts and sit inside dense mutual-follow clusters of similarly-aged accounts.
+handles. It looks for accounts that have large followings for their age and sit inside dense
+mutual-follow clusters of accounts that were registered together.
+
+Nothing is tied to particular years. "Young" is measured relative to the day you run it, and the
+creation-date checks look for registration *batches* in any year. That includes farms of old
+accounts bought to dodge new-account checks.
 
 No single signal proves automation, so the tool stacks many weak signals and puts the most
 weight on **network structure**: who follows whom, and when those accounts were created.
@@ -30,12 +34,12 @@ browser session** (via [twscrape](https://github.com/vladkens/twscrape)) or the
 | Layer | Signals |
 |---|---|
 | **Account metadata** | account age vs. follower growth (followers/day on young accounts) · following ≫ followers, accounts pinned at the 5,000-follow cap, 1:1 follow-back shape · inhuman posting or like volume · large audience with almost no posts · default avatar / empty bio / no banner · auto-generated `name12345678` handles · paid check on a brand-new account |
-| **Origin** (X's *About this account*) | country X says the account is based in vs. profile location vs. signup app-store region · VPN/proxy flag · handle renames (a rename right after sign-up is ignored) |
-| **Behaviour** (recent timeline) | share of reposts (pure amplifiers) · no sleep gap across UTC hours · clockwork posting intervals · templated / duplicate posts · automation clients · who it amplifies |
-| **Follower neighbourhood** | share of followers created in the new wave · densest 30-day creation window among followers (very fresh sign-ups are discounted because X onboarding pushes them to follow accounts) · **follower-map bands**: long runs of consecutive followers all created within the same few weeks, the classic signature of purchased or farmed followers · share of bot-like followers · follow-back rate |
-| **Follow graph clusters** | expands into the most suspicious neighbours (new, sizeable, mutual with a seed, shared between seeds), fetches *their* follow lists, then runs Louvain community detection. Clusters are scored on density, mutual follows, shared follow targets (Jaccard), creation-date cohort and member bot-likeness |
+| **Origin** (X's *About this account*) | country X says the account is based in vs. profile location vs. signup app-store region · VPN/proxy flag · handle renames (a rename right after sign-up is ignored; a recent rename of a years-old account is weighted up) |
+| **Behaviour** (recent timeline) | share of reposts (pure amplifiers) · no sleep gap across UTC hours · clockwork posting intervals · templated / duplicate posts · automation clients · who it amplifies · **dormant account reactivated** (an old account now posting far above its lifetime rate) |
+| **Follower neighbourhood** | **creation bursts in any year**: a 7-day window with far more registrations than the surrounding months predict (Poisson test, Bonferroni-corrected). Platform-wide sign-up waves are spread over months and don't trigger it; very fresh sign-ups are discounted because X onboarding pushes them to follow accounts · **follower-map bands**: long runs of consecutive followers all created in the same window (binomial test), the classic signature of purchased or farmed followers · share of young and of bot-like followers · follow-back rate |
+| **Follow graph clusters** | expands into the most suspicious neighbours of any age (inside a creation burst, mutual with a seed, shared between seeds, bot-like, sizeable), fetches *their* follow lists and recent posts, then runs Louvain community detection. Clusters are scored on density, mutual follows, shared follow targets (Jaccard), **templated profiles** (near-identical names/bios), **co-amplification** (members reposting the same posts), creation-date cohort and member bot-likeness |
 | **Seed group** | when you pass several handles: pairwise follower/following overlap, whether they follow each other, how close their creation dates are, shared amplification, and a cluster score for the group itself |
-| **Engagement sets** | for a post: reposters and repliers, their creation-date concentration (>~40% in one window is highly anomalous), share of new or bot-like engagers, reply velocity, copy-paste replies |
+| **Engagement sets** | for a post: reposters and repliers, their creation-date concentration (>~40% in one window is highly anomalous) and creation bursts, share of young or bot-like engagers, reply velocity, copy-paste replies |
 
 Signals combine as a noisy-OR, `1 − Π(1 − strength × weight)`, so several weak signals stack
 into a strong one while no single weak signal dominates. Levels: low < 30 ≤ moderate < 50 ≤
@@ -45,7 +49,7 @@ high < 70 ≤ very high.
 seed and look new and bot-like. Cluster metrics therefore:
 
 - exclude the seed's own edges;
-- compare a cluster's creation cohort and new-wave share against the whole expanded pool;
+- compare a cluster's creation cohort and share of young accounts against the whole expanded pool;
 - scale the composition signals (created together, new, bot-like) by how much real follow
   structure the cluster has.
 
@@ -116,7 +120,10 @@ xbot engagement https://x.com/someone/status/1234567890 --reposts 500 --replies 
 
 # Save raw data, then re-analyse offline with different parameters
 xbot analyze @someone --save-dataset
-xbot report xbot-reports/<run>/dataset.json.gz --recent-since 2025-01-01 --window-days 14
+xbot report xbot-reports/<run>/dataset.json.gz --young-days 365 --burst-days 3
+
+# Investigating a known campaign? Pin its start date
+xbot analyze -f handles.txt --recent-since 2024-10-01
 ```
 
 Every run prints a terminal summary and writes `report.html` (self-contained, with follower
@@ -133,11 +140,14 @@ Main knobs (`xbot analyze -h` for all):
 | `--timeline N` | 100 | recent timeline items per seed for behaviour analysis |
 | `--expand N` | 30 | neighbours whose own following lists are fetched to measure cluster density |
 | `--expand-following N` | 400 | following entries per expanded neighbour |
-| `--expand-scope recent\|all` | recent | expand only new-wave neighbours, or any |
-| `--recent-since DATE` | 2024-10-01 | start of the "new wave" |
-| `--window-days N` | 30 | creation-date clustering window |
+| `--expand-timeline N` | 20 | recent posts per expanded neighbour, for co-amplification (raise for better coverage) |
+| `--expand-scope all\|recent` | all | expand neighbours of any age (catches aged-account farms), or only young ones |
+| `--young-days N` | 730 | accounts younger than this count as young, relative to the analysis date |
+| `--recent-since DATE` | off | optional fixed start of a known campaign window; accounts created since then are flagged more strongly |
+| `--burst-days N` | 7 | creation-burst window; farms register accounts in batches over days |
+| `--window-days N` | 30 | window for creation peaks, follower-map bands and cluster cohorts |
 
-A default two-handle run makes about 400 requests and takes 1–2 minutes. Responses are cached
+A default two-handle run makes about 450 requests and takes 1–3 minutes. Responses are cached
 in `~/.xbotdetect/cache.sqlite3` for 24h (`--cache-ttl`, `--no-cache`).
 
 ## Data sources
@@ -185,8 +195,9 @@ access to your X account, so keep it private, and consider a secondary account f
   card shows every signal that fired, with the numbers behind it.
 - **Follower map.** Each dot is a sampled follower: x = follow order (oldest left), y = when that
   account was created. Organic audiences scatter. Shaded boxes mark *bands* of consecutive
-  followers created in the same window. Boxes outlined in grey are fresh sign-ups and may just be
-  X onboarding.
+  followers created in the same window. Horizontal stripes mark *creation bursts* (weeks with far
+  more registrations than the surrounding months). Grey-outlined boxes and blue stripes are fresh
+  sign-ups and may just be X onboarding.
 - **Clusters.** Density, mutual follows and shared follow targets are measured among the
   neighbours, without the seed's edges. *Seed ties* shows how many members each seed has mutual,
   outgoing and incoming follows with. *Jointly followed* lists the accounts the cluster boosts

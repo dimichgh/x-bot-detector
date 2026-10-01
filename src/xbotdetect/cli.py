@@ -7,7 +7,7 @@ import asyncio
 import logging
 import re
 import sys
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 
 from . import __version__
@@ -34,7 +34,7 @@ examples:
   xbot analyze @someone --source twscrape --cookies-from-browser chrome
   xbot profile @a @b @c                      # quick metadata-only scoring
   xbot engagement https://x.com/user/status/123
-  xbot report reports/dataset.json.gz --recent-since 2025-01-01
+  xbot report reports/dataset.json.gz --recent-since 2025-01-01   # pin a known campaign window
 """
 
 
@@ -72,12 +72,25 @@ def _add_source_args(p: argparse.ArgumentParser) -> None:
 def _add_analysis_args(p: argparse.ArgumentParser) -> None:
     g = p.add_argument_group("analysis")
     g.add_argument(
+        "--young-days",
+        type=int,
+        default=730,
+        help="accounts younger than this many days count as young (default 730, relative to the analysis date)",
+    )
+    g.add_argument(
         "--recent-since",
         type=_date,
-        default=datetime(2024, 10, 1, tzinfo=timezone.utc),
-        help="accounts created on/after this date count as the new wave (default 2024-10-01)",
+        metavar="DATE",
+        help="optional fixed campaign window start (e.g. 2024-10-01); accounts created since then are "
+        "treated as young and flagged more strongly",
     )
     g.add_argument("--window-days", type=int, default=30, help="creation-date clustering window (default 30)")
+    g.add_argument(
+        "--burst-days",
+        type=int,
+        default=7,
+        help="creation-burst window in days (default 7; farms register in batches)",
+    )
     g.add_argument("--as-of", type=_date, help="analysis date (default: collection time)")
 
 
@@ -143,13 +156,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="following entries per expanded neighbour (default 400)",
     )
     c.add_argument(
-        "--expand-timeline", type=int, default=0, help="timeline items per expanded neighbour (default 0)"
+        "--expand-timeline",
+        type=int,
+        default=20,
+        help="timeline items per expanded neighbour, for co-amplification (default 20, 0=off)",
     )
     c.add_argument(
         "--expand-scope",
-        choices=("recent", "all"),
-        default="recent",
-        help="expand only new-wave neighbours (default) or any",
+        choices=("all", "recent"),
+        default="all",
+        help="expand neighbours of any age (default; catches aged-account farms) or only young ones",
     )
     c.add_argument("--min-candidate-followers", type=int, default=200)
     c.add_argument("--no-about", action="store_true", help="skip 'About this account' lookups")
@@ -218,7 +234,12 @@ def _source(args: argparse.Namespace):
 
 
 def _cfg(args: argparse.Namespace) -> AnalysisConfig:
-    return AnalysisConfig(recent_since=args.recent_since, creation_window_days=args.window_days)
+    return AnalysisConfig(
+        young_days=args.young_days,
+        campaign_since=args.recent_since,
+        creation_window_days=args.window_days,
+        burst_window_days=args.burst_days,
+    )
 
 
 def _out_dir(args: argparse.Namespace, names: list[str]) -> Path:

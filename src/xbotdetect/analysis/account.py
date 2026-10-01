@@ -31,7 +31,7 @@ def account_metrics(acc: Account, as_of: datetime) -> dict[str, Any]:
     return m
 
 
-def _origin_signals(acc: Account) -> list[Signal]:
+def _origin_signals(acc: Account, as_of: datetime) -> list[Signal]:
     out: list[Signal] = []
     about = acc.about
     if about is None:
@@ -74,16 +74,16 @@ def _origin_signals(acc: Account) -> list[Signal]:
         )
         if not just_after_signup:
             when = f" (last {fmt_date(changed)})" if changed else ""
-            out.append(
-                Signal(
-                    "username_changes",
-                    "Handle changed",
-                    ramp(n, 0, 3),
-                    0.25,
-                    f"handle changed {n}x{when}; bought/repurposed accounts are often renamed",
-                    "origin",
+            strength = ramp(n, 0, 3)
+            detail = f"handle changed {n}x{when}; bought/repurposed accounts are often renamed"
+            age = days_between(acc.created_at, as_of)
+            if changed and age is not None and age >= 730 and (as_of - changed).days <= 365:
+                strength = max(strength, 0.7)
+                detail = (
+                    f"renamed {fmt_date(changed)} on a {age / 365:.0f}-year-old account ({n}x in total); "
+                    "aged accounts are often bought and renamed to dodge new-account checks"
                 )
-            )
+            out.append(Signal("username_changes", "Handle changed", strength, 0.25, detail, "origin"))
     return out
 
 
@@ -93,9 +93,9 @@ def account_signals(acc: Account, as_of: datetime, cfg: AnalysisConfig) -> list[
     eff = max(age or 0.0, 1.0)
 
     if age is not None:
-        s = ramp(age, 730, 90)
-        if acc.created_at and acc.created_at >= cfg.recent_since:
-            s = max(s, 0.5)
+        s = ramp(age, cfg.young_days, 90)
+        if cfg.campaign_since and acc.created_at and acc.created_at >= cfg.campaign_since:
+            s = max(s, 0.5)  # inside an explicitly configured campaign window
         if s > 0:
             sig.append(
                 Signal(
@@ -230,5 +230,5 @@ def account_signals(acc: Account, as_of: datetime, cfg: AnalysisConfig) -> list[
             )
         )
 
-    sig.extend(_origin_signals(acc))
+    sig.extend(_origin_signals(acc, as_of))
     return sig

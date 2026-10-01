@@ -36,8 +36,11 @@ def organic(rng: random.Random, i: int) -> Account:
     )
 
 
-def farm_account(rng: random.Random, i: int) -> Account:
-    created = datetime(2025, 6, 1, tzinfo=UTC) + timedelta(days=rng.uniform(0, 10))
+FARM_START = datetime(2025, 6, 1, tzinfo=UTC)
+
+
+def farm_account(rng: random.Random, i: int, start: datetime = FARM_START) -> Account:
+    created = start + timedelta(days=rng.uniform(0, 10))
     return Account(
         id=str(50_000 + i),
         handle=f"Anna{rng.randint(10_000_000, 99_999_999)}",
@@ -53,7 +56,7 @@ def farm_account(rng: random.Random, i: int) -> Account:
     )
 
 
-def build_world(with_farm: bool = True, seed: int = 7) -> Dataset:
+def build_world(with_farm: bool = True, seed: int = 7, farm_start: datetime = FARM_START) -> Dataset:
     rng = random.Random(seed)
     ds = Dataset(as_of=AS_OF)
     target = Account(
@@ -83,7 +86,7 @@ def build_world(with_farm: bool = True, seed: int = 7) -> Dataset:
     people = [organic(rng, i) for i in range(320)]
     for a in people:
         ds.add_account(a)
-    farm = [farm_account(rng, i) for i in range(80)] if with_farm else []
+    farm = [farm_account(rng, i, farm_start) for i in range(80)] if with_farm else []
     for a in farm:
         ds.add_account(a)
 
@@ -136,3 +139,9 @@ def farm_world() -> Dataset:
 @pytest.fixture
 def clean_world() -> Dataset:
     return build_world(with_farm=False)
+
+
+@pytest.fixture
+def aged_farm_world() -> Dataset:
+    """Same farm, but registered in 2016: bought aged accounts dodge new-account heuristics."""
+    return build_world(with_farm=True, farm_start=datetime(2016, 3, 1, tzinfo=UTC))

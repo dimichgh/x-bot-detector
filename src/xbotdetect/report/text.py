@@ -32,9 +32,9 @@ def _nb_line(report: Report, sid: str, rel: str) -> str | None:
     cfg = report.config
     total = f" of {fmt_int(nb.total)}" if nb.total else ""
     return (
-        f"{rel} ({nb.sampled}{total} sampled): {nb.recent_share:.0%} new-wave, densest {cfg.creation_window_days}-day "
-        f"creation window {nb.aged_peak.share:.0%} (excl. fresh sign-ups), {len(nb.bands)} band(s), "
-        f"{nb.botlike_share:.0%} bot-like"
+        f"{rel} ({nb.sampled}{total} sampled): {nb.recent_share:.0%} {cfg.young_label}, "
+        f"{len([b for b in nb.bursts if not b.fresh_signups])} creation burst(s) holding {nb.burst_excess:.1%} beyond "
+        f"background, {len(nb.bands)} follower-map band(s), {nb.botlike_share:.0%} bot-like"
     )
 
 
@@ -68,7 +68,7 @@ def render_text(report: Report, top: int = 15) -> str:
             L.append(
                 f"  #{c.id} {c.score * 100:3.0f} {c.level:<9} {kind}: {c.size} accounts · density {c.density:.0%} · "
                 f"mutual {c.reciprocity:.0%} · {c.peak30.share:.0%} created within {report.config.creation_window_days}d "
-                f"({fmt_date(c.peak30.start)}..{fmt_date(c.peak30.end)}) · {c.recent_share:.0%} new-wave"
+                f"({fmt_date(c.peak30.start)}..{fmt_date(c.peak30.end)}) · {c.recent_share:.0%} young"
             )
             L.append(
                 "      members: "
@@ -103,7 +103,7 @@ def render_text(report: Report, top: int = 15) -> str:
         L.append("")
         L.append(f"ENGAGEMENT on post {e.tweet_id}: {e.score * 100:.0f} {e.level.upper()}")
         L.append(
-            f"  {e.engagers} engagers ({e.reposters} reposters, {e.repliers} repliers) · {e.recent_share:.0%} new-wave · "
+            f"  {e.engagers} engagers ({e.reposters} reposters, {e.repliers} repliers) · {e.recent_share:.0%} young · "
             f"densest creation window {e.peak.share:.0%} · {e.botlike_share:.0%} bot-like"
         )
         for s in active(e.signals):
@@ -170,7 +170,7 @@ def render_markdown(report: Report, top: int = 40) -> str:
     L.append("")
     if report.clusters:
         L.append(
-            f"| # | Score | Kind | Size | Density | Mutual | Created within {cfg.creation_window_days}d | New wave "
+            f"| # | Score | Kind | Size | Density | Mutual | Created within {cfg.creation_window_days}d | Young "
             "| Seed ties | Members |"
         )
         L.append("|---|---|---|---|---|---|---|---|---|---|")

@@ -31,7 +31,12 @@ def _year_ticks(lo: datetime, hi: datetime, max_ticks: int = 8) -> list[datetime
 
 
 def follower_map(
-    nb: Neighborhood, as_of: datetime, recent_since: datetime, width: int = 760, height: int = 300
+    nb: Neighborhood,
+    as_of: datetime,
+    recent_since: datetime,
+    width: int = 760,
+    height: int = 300,
+    young_label: str = "young",
 ) -> str:
     """Creation date (y) vs follow order (x, oldest follow on the left)."""
     pts = nb.points
@@ -65,7 +70,19 @@ def follower_map(
         out.append(f'<line class="ref" x1="{ml}" x2="{ml + pw}" y1="{rs:.1f}" y2="{rs:.1f}"/>')
         ref_label = (
             f'<text class="tick halo" x="{ml + pw}" y="{rs - 5:.1f}" text-anchor="end">'
-            f"new wave ({fmt_date(recent_since)})</text>"
+            f"{esc(young_label)} (since {fmt_date(recent_since)})</text>"
+        )
+    for bu in nb.bursts:
+        y0, y1 = y(bu.end), y(bu.start)
+        tip = (
+            f"Creation burst: {bu.count} accounts created {fmt_date(bu.start)} - {fmt_date(bu.end)} "
+            f"vs ~{bu.expected:.1f} expected (p={bu.p_value:.0e})"
+            + (" - fresh sign-ups, may be X onboarding" if bu.fresh_signups else "")
+        )
+        cls = "burst fresh" if bu.fresh_signups else "burst"
+        out.append(
+            f'<rect class="{cls}" x="{ml}" y="{(y0 + y1) / 2 - max((y1 - y0) / 2, 2):.1f}" width="{pw}" '
+            f'height="{max(y1 - y0, 4):.1f}"><title>{esc(tip)}</title></rect>'
         )
     for b in nb.bands:
         bx0, bx1 = x(b.rank_start - 0.5), x(b.rank_end + 0.5)
