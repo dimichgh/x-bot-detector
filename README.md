@@ -8,9 +8,17 @@ No single signal proves automation, so the tool stacks many weak signals and put
 weight on **network structure**: who follows whom, and when those accounts were created.
 That structure is much harder to fake than profile text.
 
+## Quick start
+
+No cloning needed. With [uv](https://docs.astral.sh/uv/) installed, this one line downloads the
+tool and runs it:
+
+```bash
+uvx --from git+https://github.com/dimichgh/x-bot-detector xbot analyze @handle1 @handle2
 ```
-xbot analyze @handle1 @handle2
-```
+
+It prints a summary in the terminal and writes an HTML report to `./xbot-reports/`.
+To keep the `xbot` command around, see [Install](#install).
 
 By default this needs **no X login and no API key**. It uses the free
 [FxTwitter API](https://github.com/FxEmbed/FxEmbed). Optionally it can use **your own logged-in X
@@ -45,15 +53,51 @@ A seed is then scored on how tightly it is tied into each cluster.
 
 ## Install
 
+Requires Python ≥ 3.10. Install the `xbot` command straight from GitHub with
+[pipx](https://pipx.pypa.io) or [uv](https://docs.astral.sh/uv/). Both put it in its own isolated
+environment, so nothing clashes with your other Python packages:
+
 ```bash
-git clone https://github.com/dimichgh/x-bot-detector && cd x-bot-detector
-python -m venv .venv && . .venv/bin/activate
-pip install -e .                    # core: FxTwitter source, analysis, reports
-pip install -e '.[twscrape]'        # + use your logged-in X session
-pip install -e '.[browser]'         # + read x.com cookies straight from Chrome/Firefox/Safari
+pipx install git+https://github.com/dimichgh/x-bot-detector
+# or
+uv tool install git+https://github.com/dimichgh/x-bot-detector
+
+xbot analyze @handle1 @handle2
 ```
 
-Python ≥ 3.10.
+If your shell says `xbot: command not found`, run `pipx ensurepath` (or `uv tool update-shell`)
+and open a new terminal.
+
+To also use your logged-in X session (see [Using your browser session](#using-your-browser-session)),
+install the optional extras:
+
+```bash
+pipx install "x-bot-detector[twscrape,browser] @ git+https://github.com/dimichgh/x-bot-detector"
+# or
+uv tool install "x-bot-detector[twscrape,browser] @ git+https://github.com/dimichgh/x-bot-detector"
+```
+
+- `twscrape`: fetch data through your X session cookies.
+- `browser`: read those cookies straight from Chrome, Firefox or Safari.
+
+| | pipx | uv |
+|---|---|---|
+| Update to the latest version | `pipx upgrade x-bot-detector` | `uv tool upgrade x-bot-detector` |
+| Uninstall | `pipx uninstall x-bot-detector` | `uv tool uninstall x-bot-detector` |
+
+<details>
+<summary>Plain pip, or from a local checkout</summary>
+
+```bash
+python -m venv .venv && . .venv/bin/activate
+pip install "x-bot-detector[twscrape,browser] @ git+https://github.com/dimichgh/x-bot-detector"
+
+# or, to change the code:
+git clone https://github.com/dimichgh/x-bot-detector && cd x-bot-detector
+pip install -e '.[dev,twscrape,browser]'
+```
+
+</details>
 
 ## Usage
 
@@ -164,6 +208,8 @@ access to your X account, so keep it private, and consider a secondary account f
 ## Development
 
 ```bash
+git clone https://github.com/dimichgh/x-bot-detector && cd x-bot-detector
+python -m venv .venv && . .venv/bin/activate
 pip install -e '.[dev]'
 pytest            # synthetic follow-farm fixtures, mocked HTTP, CLI round-trips
 ruff check src tests
