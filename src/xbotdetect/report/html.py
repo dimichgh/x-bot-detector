@@ -219,14 +219,14 @@ def _clusters(report: Report) -> str:
 
 
 def _pairs(report: Report) -> str:
-    if not report.pairs:
+    if not report.informative_pairs:
         return ""
     rows = []
 
     def yn(v: bool | None) -> str:
         return "yes" if v else ("not seen" if v is False else "?")
 
-    for p in report.pairs:
+    for p in report.informative_pairs:
         rows.append(
             f"<tr><td>{_h(report, p.a)} / {_h(report, p.b)}</td>"
             f"<td class='num'>{'-' if p.follower_jaccard is None else f'{p.follower_jaccard:.3f}'} ({p.shared_followers})</td>"

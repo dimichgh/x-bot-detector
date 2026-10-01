@@ -87,10 +87,10 @@ def render_text(report: Report, top: int = 15) -> str:
         L.append("FOLLOW CLUSTERS: none of 3+ accounts among expanded neighbours")
     else:
         L.append("FOLLOW CLUSTERS: not measured (no 2nd-degree expansion; use --expand N)")
-    if report.pairs:
+    if report.informative_pairs:
         L.append("")
         L.append("SEED OVERLAP")
-        for p in report.pairs:
+        for p in report.informative_pairs:
             fj = "-" if p.follower_jaccard is None else f"{p.follower_jaccard:.3f}"
             gj = "-" if p.following_jaccard is None else f"{p.following_jaccard:.3f}"
             apart = "?" if p.created_days_apart is None else f"{p.created_days_apart:.0f}"
@@ -182,7 +182,7 @@ def render_markdown(report: Report, top: int = 40) -> str:
             )
     else:
         L.append("_No clusters measured or found._")
-    if report.pairs:
+    if report.informative_pairs:
         L.append("")
         L.append("## Seed overlap")
         L.append("")
@@ -190,7 +190,7 @@ def render_markdown(report: Report, top: int = 40) -> str:
             "| Pair | Follower J (shared) | Following J (shared) | Follows a→b / b→a | Created days apart |"
         )
         L.append("|---|---|---|---|---|")
-        for p in report.pairs:
+        for p in report.informative_pairs:
             fj = "-" if p.follower_jaccard is None else f"{p.follower_jaccard:.3f}"
             gj = "-" if p.following_jaccard is None else f"{p.following_jaccard:.3f}"
             apart = "-" if p.created_days_apart is None else f"{p.created_days_apart:.0f}"

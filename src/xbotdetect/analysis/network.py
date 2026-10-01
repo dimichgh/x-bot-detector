@@ -14,6 +14,7 @@ import networkx as nx
 
 from ..dataset import Dataset
 from ..util import days_between, fmt_date, iso, ramp
+from .account import ORG_TYPES
 from .behavior import normalize_text
 from .config import AnalysisConfig
 from .scoring import Signal, combine, level
@@ -175,7 +176,10 @@ def seed_network_signals(
                     "network",
                 )
             )
-        s = ramp(nb.recent_share, 0.5, 0.85)
+        # The newest followers of any account skew young (new users follow a lot), so the share only
+        # says something about the audience when the sample covers a good part of it.
+        coverage = nb.sampled / nb.total if nb.total else 0.0
+        s = ramp(nb.recent_share, 0.5, 0.85) * ramp(coverage, 0.2, 0.6)
         if s > 0:
             sig.append(
                 Signal(
@@ -183,7 +187,8 @@ def seed_network_signals(
                     "Followers mostly young accounts",
                     s,
                     0.2,
-                    f"{nb.recent_share:.0%} of sampled followers are {cfg.young_label}",
+                    f"{nb.recent_share:.0%} of sampled followers are {cfg.young_label} "
+                    f"(sample covers {coverage:.0%} of followers)",
                     "network",
                 )
             )
@@ -217,7 +222,8 @@ def seed_network_signals(
                 )
             )
     if following and following.sampled >= 50:
-        s = burst_strength(following)
+        # Accounts following 100k+ (legacy auto-follow-back) don't choose whom they follow.
+        s = burst_strength(following) * ramp(following.total or 0, 100_000, 20_000)
         if s > 0:
             hard = [b for b in following.bursts if not b.fresh_signups]
             sig.append(
@@ -294,6 +300,7 @@ class Cluster:
     name_dup_share: float | None
     bio_dup_share: float | None
     co_amplification: float | None  # mean pairwise Jaccard of reposted posts (needs member timelines)
+    verified_org_share: float
     signals: list[Signal]
     score: float
     level: str
@@ -415,9 +422,7 @@ def cluster_signals(
                     "cluster",
                 )
             )
-    for c in coordination or []:  # behavioural/profile coordination counts as structure
-        sig.append(c)
-        structure.append(c.score)
+    sig.extend(coordination or [])
     gate = min(1.0, max(structure) / 0.5) if gate_composition else 1.0
     gate_note = f" (scaled x{gate:.2f}: weak follow structure)" if gate < 1 else ""
 
@@ -467,6 +472,36 @@ def cluster_signals(
             )
         )
     return sig
+
+
+STRUCTURE_KEYS = {"density": 0.35, "reciprocity": 0.2, "following_overlap": 0.3}
+COMPOSITION_KEYS = {
+    "creation_cohort": 0.35,
+    "recent_cohort": 0.2,
+    "member_scores": 0.3,
+    "templated_profiles": 0.3,
+    "co_amplification": 0.35,
+}
+# Normalise composition against the signals that are always measurable; templating and
+# co-amplification only add on top (they need names/bios or member timelines).
+CORE_COMPOSITION = {k: COMPOSITION_KEYS[k] for k in ("creation_cohort", "recent_cohort", "member_scores")}
+
+
+def _max_combined(weights: dict[str, float]) -> float:
+    return 1.0 - math.prod(1.0 - w for w in weights.values())
+
+
+def cluster_score(sig: list[Signal], kind: str, org_share: float = 0.0) -> float:
+    """Neighbour clusters need both structure (a dense follow mesh) and anomalous composition
+    (created together, bot-like, templated, co-amplifying): dense real communities such as an
+    agency's accounts or a friend group are structure without anomaly. The analysed seed group
+    has no selection bias, so any evidence counts there."""
+    if kind != "neighbours":
+        return combine(sig)
+    structure = combine([s for s in sig if s.key in STRUCTURE_KEYS]) / _max_combined(STRUCTURE_KEYS)
+    composition = combine([s for s in sig if s.key in COMPOSITION_KEYS]) / _max_combined(CORE_COMPOSITION)
+    composition *= 1.0 - org_share  # identity-verified organisations are not farms
+    return min(1.0, structure) * (0.25 + 0.75 * min(1.0, composition))
 
 
 def _trigrams(s: str) -> set[str]:
@@ -599,8 +634,10 @@ def _measure(
         gate_composition=kind == "neighbours",
         coordination=coord,
     )
+    orgs = [ds.accounts[m] for m in mem if m in ds.accounts and ds.accounts[m].verified_type in ORG_TYPES]
+    org_share = len(orgs) / n
     # Shares over 3-5 accounts are coarse evidence; full weight from 6 members up.
-    score = combine(sig) * min(1.0, (n - 1) / 5)
+    score = cluster_score(sig, kind, org_share) * min(1.0, (n - 1) / 5)
     c = Cluster(
         id=0,
         kind=kind,
@@ -615,6 +652,7 @@ def _measure(
         mean_member_score=mean_score,
         following_jaccard=jac,
         **coord_metrics,
+        verified_org_share=org_share,
         shared_targets=shared,
         signals=sig,
         score=score,

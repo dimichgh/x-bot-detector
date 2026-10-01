@@ -286,3 +286,59 @@ async def test_expansion_reaches_aged_farm(tmp_path, aged_farm_world):
         src, ["TargetAccount"], CollectOptions(**{**opts.to_dict(), "expand_scope": "recent"})
     )
     assert not [i for i in old.expanded_ids if int(i) >= 50_000]  # the old date-gated behaviour misses them
+
+
+def test_celebrity_and_verified_org_discounts():
+    cfg = AnalysisConfig().resolve(AS_OF)
+    star = Account(
+        id="11",
+        handle="FamousCEO",
+        created_at=AS_OF - timedelta(days=97),
+        followers=1_100_000,
+        following=50,
+        tweets=19,
+        description="CEO",
+        source="fxtwitter",
+        banner_url="b",
+    )
+    k = keys(account_signals(star, AS_OF, cfg))
+    assert "rapid_follower_growth" not in k and "dormant_audience" not in k  # beyond follow-farm scale
+    gov = Account(
+        id="12",
+        handle="AgencyHead",
+        created_at=AS_OF - timedelta(days=100),
+        followers=50_000,
+        following=100,
+        tweets=30,
+        description="",
+        source="fxtwitter",
+        verified=True,
+        verified_type="government",
+    )
+    plain = Account(**{**gov.__dict__, "id": "13", "verified_type": None, "verified": False})
+    assert combine(account_signals(gov, AS_OF, cfg)) < 0.5 * combine(account_signals(plain, AS_OF, cfg))
+
+
+def test_cluster_needs_structure_and_anomaly():
+    from xbotdetect.analysis.network import cluster_score
+
+    dense = [Signal("density", "", 1.0, 0.35, ""), Signal("reciprocity", "", 1.0, 0.2, "")]
+    anomalous = [Signal("creation_cohort", "", 1.0, 0.35, ""), Signal("member_scores", "", 1.0, 0.3, "")]
+    real_community = cluster_score(dense, "neighbours")
+    farm = cluster_score(dense + anomalous, "neighbours")
+    assert real_community < 0.3 < 0.5 < farm  # 0.5 = cluster_flag_threshold
+    assert cluster_score(anomalous, "neighbours") == 0  # no follow structure, no cluster
+    assert cluster_score(dense + anomalous, "neighbours", org_share=1.0) == real_community  # verified orgs
+    assert cluster_score(anomalous, "seed-group") > 0.5  # user-chosen group: composition alone counts
+
+
+def test_young_followers_ignored_when_sample_is_a_sliver(farm_world):
+    from xbotdetect.analysis.network import seed_network_signals
+
+    r = analyze(farm_world)
+    nb = r.neighborhoods["1"]["followers"]
+    nb.recent_share = 0.95
+    nb.total = 240_000_000  # 400 newest followers of a mega account = the last few minutes
+    assert "followers_mostly_new" not in keys(seed_network_signals(nb, None, None, r.config))
+    nb.total = 450
+    assert "followers_mostly_new" in keys(seed_network_signals(nb, None, None, r.config))

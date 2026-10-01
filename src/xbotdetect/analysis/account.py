@@ -12,6 +12,11 @@ from . import countries
 from .config import AnalysisConfig
 from .scoring import Signal
 
+# X's gold (organization/business) and grey (government) checks require paid identity verification.
+ORG_TYPES = {"government", "organization", "business"}
+ORG_DISCOUNT = 0.4
+AUDIENCE_SIGNALS = {"rapid_follower_growth", "dormant_audience", "young_account", "paid_new"}
+
 _AUTOGEN_HANDLE = re.compile(r"^[A-Za-z]+_?[A-Za-z]*\d{5,}$|\d{8,}$")
 _FOLLOW_LIMIT = (4900, 5100)  # X caps following at 5,000 until you have enough followers
 
@@ -219,7 +224,7 @@ def account_signals(acc: Account, as_of: datetime, cfg: AnalysisConfig) -> list[
             )
         )
 
-    if acc.verified and age is not None and age < 180 and acc.verified_type not in ("business", "government"):
+    if acc.verified and age is not None and age < 180 and acc.verified_type not in ORG_TYPES:
         sig.append(
             Signal(
                 "paid_new",
@@ -231,4 +236,17 @@ def account_signals(acc: Account, as_of: datetime, cfg: AnalysisConfig) -> list[
         )
 
     sig.extend(_origin_signals(acc, as_of))
-    return sig
+
+    # Audiences of a million+ are beyond what follow farms deliver: a young account that big is a
+    # celebrity or brand joining X, so growth/audience-shape signals fade out between 200k and 1M.
+    scale = ramp(fol, 1_000_000, 200_000) if fol is not None else 1.0
+    if scale < 1:
+        for s in sig:
+            if s.key in AUDIENCE_SIGNALS:
+                s.score *= scale
+                s.detail += " (discounted: audience beyond follow-farm scale)"
+    if acc.verified_type in ORG_TYPES:
+        for s in sig:
+            s.score *= ORG_DISCOUNT
+            s.detail += f" (x{ORG_DISCOUNT}: identity-verified {acc.verified_type})"
+    return [s for s in sig if s.score > 0]

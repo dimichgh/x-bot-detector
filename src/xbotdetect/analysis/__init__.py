@@ -86,6 +86,20 @@ class Report:
     def seeds(self) -> list[AccountResult]:
         return [self.accounts[i] for i in self.dataset.seed_ids if i in self.accounts]
 
+    @property
+    def informative_pairs(self) -> list[PairOverlap]:
+        """Seed pairs with something to show (follow lists, mutual follows or shared amplification)."""
+        return [
+            p
+            for p in self.pairs
+            if p.follower_jaccard is not None
+            or p.following_jaccard is not None
+            or p.a_follows_b
+            or p.b_follows_a
+            or p.shared_amplified_accounts
+            or p.shared_reposted_posts
+        ]
+
     def handle(self, account_id: str) -> str:
         acc = self.dataset.accounts.get(account_id)
         return acc.handle if acc else account_id

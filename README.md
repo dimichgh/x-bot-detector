@@ -50,10 +50,29 @@ seed and look new and bot-like. Cluster metrics therefore:
 
 - exclude the seed's own edges;
 - compare a cluster's creation cohort and share of young accounts against the whole expanded pool;
-- scale the composition signals (created together, new, bot-like) by how much real follow
-  structure the cluster has.
+- score a cluster as *structure × anomaly*. Dense mutual following alone is what real
+  communities look like (an agency's accounts, a company's executives, a friend group). A cluster
+  only scores high when its members are also anomalous: created together, bot-like, templated or
+  co-amplifying.
 
 A seed is then scored on how tightly it is tied into each cluster.
+
+**False-positive controls.** Popular and official accounts have unusual-looking metadata
+for legitimate reasons, so:
+
+- *Identity-verified organisations* (X's gold and grey checks) have their signals cut to 40%,
+  both as accounts and as cluster members. Farms don't pay for organisation verification.
+- *Audiences of a million or more* are beyond what follow farms deliver. Fast-growth and
+  big-audience signals fade out between 200k and 1M followers, so a celebrity or brand joining X
+  isn't flagged.
+- *"Followers mostly young"* only counts when the sample covers a real share of the audience.
+  The newest 1,000 followers of a 50M-follower account arrived in the last few minutes, and new
+  users always dominate that slice.
+- *Following-list bursts* are ignored for accounts following 100k or more. Those are legacy
+  auto-follow-back accounts that don't choose whom they follow.
+
+Sanity check (October 2026, default settings): @elonmusk, @BarackObama, @NASA, @nytimes, @paulg and
+@karpathy all score **low** (0–27), including the dense clusters of official accounts around them.
 
 ## Install
 
