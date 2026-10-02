@@ -244,6 +244,10 @@ _ALIASES: dict[str, tuple[str, ...]] = {
     "KZ": ("kazakhstan", "қазақстан", "казахстан", "almaty", "алматы", "astana", "астана"),
     "UZ": ("uzbekistan", "oʻzbekiston", "узбекистан", "tashkent", "ташкент"),
     "KG": ("kyrgyzstan", "кыргызстан", "киргизия", "bishkek", "бишкек"),
+    "TM": ("turkmenistan", "türkmenistan", "туркменистан", "ashgabat", "ашхабад"),
+    "KP": ("north korea", "dprk", "democratic people's republic of korea", "조선", "pyongyang"),
+    "MM": ("myanmar", "burma", "မြန်မာ", "yangon", "naypyidaw"),
+    "TZ": ("tanzania", "dar es salaam", "dodoma"),
     "TR": ("turkey", "türkiye", "turkiye", "турция", "istanbul", "i̇stanbul", "ankara", "izmir"),
     "IL": ("israel", "ישראל", "израиль", "tel aviv", "jerusalem", "haifa"),
     "PS": ("palestine", "فلسطين", "gaza", "west bank", "ramallah"),
@@ -300,6 +304,11 @@ _ALIASES: dict[str, tuple[str, ...]] = {
     "MX": ("mexico", "méxico", "ciudad de méxico", "cdmx", "guadalajara", "monterrey"),
     "CU": ("cuba", "havana", "la habana"),
 }
+
+# Countries where X is blocked, so ordinary users connect through a VPN and X's "based in" shows
+# the VPN's exit country. Mismatches against "based in" are expected there and say little.
+# Reflects 2026; override with --x-blocked.
+X_BLOCKED_DEFAULT = frozenset({"RU", "CN", "IR", "KP", "TM", "MM", "VE", "TZ"})
 
 _ALIAS_TO_CODE: dict[str, str] = {}
 for _code, _names in _ALIASES.items():

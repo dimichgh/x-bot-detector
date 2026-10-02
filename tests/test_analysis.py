@@ -342,3 +342,58 @@ def test_young_followers_ignored_when_sample_is_a_sliver(farm_world):
     assert "followers_mostly_new" not in keys(seed_network_signals(nb, None, None, r.config))
     nb.total = 450
     assert "followers_mostly_new" in keys(seed_network_signals(nb, None, None, r.config))
+
+
+def _origin(location, source, based, blocked=None, accurate=None):
+    acc = Account(
+        id="20",
+        handle="someone",
+        created_at=AS_OF - timedelta(days=2000),
+        followers=300,
+        following=300,
+        tweets=3000,
+        description="d",
+        location=location,
+        source="fxtwitter",
+        banner_url="b",
+        about=About(based_in=based, source=source, location_accurate=accurate),
+    )
+    cfg = AnalysisConfig() if blocked is None else AnalysisConfig(x_blocked_countries=frozenset(blocked))
+    return {s.key: s for s in account_signals(acc, AS_OF, cfg.resolve(AS_OF))}
+
+
+def test_vpn_from_country_where_x_is_blocked_is_not_a_mismatch():
+    # Russian user, Russian app store, connecting via a Dutch VPN because X is blocked in Russia.
+    sig = _origin("Москва", "Russian Federation Android App", "Netherlands")
+    assert sig["origin_mismatch"].score <= 0.1 and "blocked in Russia" in sig["origin_mismatch"].detail
+    vpn = _origin("Москва", "Russian Federation Android App", "Netherlands", accurate=False)
+    assert vpn["location_inaccurate"].score <= 0.2  # VPN expected there
+    # Without the blocked-country list the same pattern is a moderate mismatch.
+    assert (
+        _origin("Москва", "Russian Federation Android App", "Netherlands", blocked=[])[
+            "origin_mismatch"
+        ].score
+        == 0.4
+    )
+
+
+def test_persona_mismatch_vs_relocation():
+    # Claims Germany, registered via the Russian app store and X places it in Russia: persona mismatch.
+    assert (
+        _origin("Berlin, Germany", "Russian Federation Android App", "Russian Federation")[
+            "origin_mismatch"
+        ].score
+        == 1.0
+    )
+    # Claims Germany and X places it in Germany, but it signed up in Russia: fits an emigrant.
+    assert (
+        _origin("Berlin, Germany", "Russian Federation App Store", "Germany")["origin_mismatch"].score == 0.3
+    )
+    # Ordinary country, only "based in" differs: travel, relocation or VPN.
+    assert _origin("Texas", "United States App Store", "Nigeria")["origin_mismatch"].score == 0.4
+    assert "origin_mismatch" not in _origin("Berlin", "Germany Android App", "Germany")
+    # Claims Russia but US app store + US "based in": common circumvention in a blocked country.
+    assert (
+        _origin("Российская Федерация", "United States Android App", "United States")["origin_mismatch"].score
+        == 0.3
+    )

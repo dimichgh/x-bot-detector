@@ -12,6 +12,7 @@ from pathlib import Path
 
 from . import __version__
 from .analysis import AnalysisConfig, analyze
+from .analysis.countries import X_BLOCKED_DEFAULT
 from .collect import CollectOptions, collect, collect_engagement
 from .cookies import CookieError
 from .dataset import Dataset
@@ -90,6 +91,13 @@ def _add_analysis_args(p: argparse.ArgumentParser) -> None:
         type=int,
         default=7,
         help="creation-burst window in days (default 7; farms register in batches)",
+    )
+    g.add_argument(
+        "--x-blocked",
+        metavar="CODES",
+        default=",".join(sorted(X_BLOCKED_DEFAULT)),
+        help="ISO codes of countries where X is blocked, so a VPN-shifted 'based in' is expected there "
+        f"(default {','.join(sorted(X_BLOCKED_DEFAULT))}; pass '' for none)",
     )
     g.add_argument("--as-of", type=_date, help="analysis date (default: collection time)")
 
@@ -239,6 +247,7 @@ def _cfg(args: argparse.Namespace) -> AnalysisConfig:
         campaign_since=args.recent_since,
         creation_window_days=args.window_days,
         burst_window_days=args.burst_days,
+        x_blocked_countries=frozenset(c.strip().upper() for c in args.x_blocked.split(",") if c.strip()),
     )
 
 

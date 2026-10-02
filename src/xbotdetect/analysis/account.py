@@ -36,7 +36,11 @@ def account_metrics(acc: Account, as_of: datetime) -> dict[str, Any]:
     return m
 
 
-def _origin_signals(acc: Account, as_of: datetime) -> list[Signal]:
+def _origin_signals(acc: Account, as_of: datetime, cfg: AnalysisConfig) -> list[Signal]:
+    """Compare three country hints. X's "based in" follows the connection, so a VPN changes it.
+    The signup source (app-store region) does not change with a VPN, and the profile location is
+    whatever the owner typed. In countries where X is blocked, ordinary users must use a VPN, so a
+    "based in" that differs from their home country is expected there."""
     out: list[Signal] = []
     about = acc.about
     if about is None:
@@ -44,27 +48,66 @@ def _origin_signals(acc: Account, as_of: datetime) -> list[Signal]:
     based = countries.source_country(about.based_in)
     signup = countries.source_country(about.source)
     claimed = countries.resolve(acc.location)
-    parts: list[str] = []
-    score = 0.0
-    if based and claimed and not (based & claimed):
-        score = 1.0
-        parts.append(f"profile location {acc.location!r} but X says based in {about.based_in}")
-    if based and signup and not (based & signup):
-        score = max(score, 0.6)
-        parts.append(f"signed up via {about.source!r} but based in {about.based_in}")
-    elif not based and signup and claimed and not (signup & claimed):
-        score = max(score, 0.5)
-        parts.append(f"profile location {acc.location!r} but signed up via {about.source!r}")
-    if score:
-        out.append(Signal("origin_mismatch", "Country mismatch", score, 0.3, "; ".join(parts), "origin"))
+    blocked = (signup | claimed) & cfg.x_blocked_countries
+    vpn_note = ""
+    if blocked:
+        names = ", ".join(sorted(countries.country_name(c) for c in blocked))
+        vpn_note = f"; X is blocked in {names}, so users there connect via VPN"
+    loc = f"profile location {acc.location!r}"
+    candidates: list[tuple[float, str]] = []
+
+    # Persona mismatch: the profile claims one country, the app-store region says another.
+    claimed_blocked = claimed & cfg.x_blocked_countries
+    if claimed and signup and not (claimed & signup):
+        if claimed_blocked and not (signup & cfg.x_blocked_countries):
+            # e.g. claims Russia, foreign app store + foreign "based in": users in countries where X is
+            # blocked commonly switch app-store region and connect via VPN.
+            candidates.append(
+                (
+                    0.3,
+                    f"{loc} but signed up via {about.source!r}, based in {about.based_in or '?'}"
+                    f"{vpn_note}; foreign app-store accounts are a common workaround there",
+                )
+            )
+        elif based and based & signup:
+            candidates.append(
+                (1.0, f"{loc} but signed up via {about.source!r} and X places it in {about.based_in}")
+            )
+        elif based and based & claimed:
+            candidates.append(
+                (
+                    0.3,
+                    f"{loc} matches where X places it, but it signed up via {about.source!r} (fits relocation)",
+                )
+            )
+        else:
+            candidates.append((0.6, f"{loc} but signed up via {about.source!r}"))
+
+    # Only "based in" disagrees with the home country (signup region and/or profile).
+    home = signup | claimed
+    if based and home and not (based & home):
+        if blocked:
+            strength = 0.1
+        elif about.location_accurate is False:
+            strength = 0.2  # X itself flags a VPN/proxy; a VPN alone is not suspicious
+        else:
+            strength = 0.4  # travel, relocation or VPN
+        hint = f"signed up via {about.source!r}" if signup else loc
+        candidates.append((strength, f"{hint} but X says based in {about.based_in}{vpn_note}"))
+
+    if candidates:
+        score = max(c[0] for c in candidates)
+        detail = "; ".join(d for _, d in sorted(candidates, reverse=True))
+        out.append(Signal("origin_mismatch", "Country mismatch", score, 0.3, detail, "origin"))
     if about.location_accurate is False:
         out.append(
             Signal(
                 "location_inaccurate",
                 "VPN/proxy flagged",
-                1.0,
+                0.2 if blocked else 1.0,
                 0.15,
-                "X notes the shown country may be inaccurate (connection via VPN/proxy)",
+                "X notes the shown country may be inaccurate (connection via VPN/proxy)"
+                + (f" - expected{vpn_note}" if blocked else ""),
                 "origin",
             )
         )
@@ -235,7 +278,7 @@ def account_signals(acc: Account, as_of: datetime, cfg: AnalysisConfig) -> list[
             )
         )
 
-    sig.extend(_origin_signals(acc, as_of))
+    sig.extend(_origin_signals(acc, as_of, cfg))
 
     # Audiences of a million+ are beyond what follow farms deliver: a young account that big is a
     # celebrity or brand joining X, so growth/audience-shape signals fade out between 200k and 1M.

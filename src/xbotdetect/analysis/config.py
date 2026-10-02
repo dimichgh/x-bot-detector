@@ -7,11 +7,12 @@ wherever they fall in time. ``campaign_since`` optionally pins a known campaign 
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timedelta
 from typing import Any
 
 from ..util import iso
+from .countries import X_BLOCKED_DEFAULT
 
 
 @dataclass
@@ -43,6 +44,8 @@ class AnalysisConfig:
     cluster_flag_threshold: float = 0.5
     louvain_resolution: float = 1.0
     seed: int = 42
+    # ISO codes of countries where X is blocked (users need a VPN, so "based in" is unreliable).
+    x_blocked_countries: frozenset[str] = field(default_factory=lambda: X_BLOCKED_DEFAULT)
 
     def resolve(self, as_of: datetime) -> AnalysisConfig:
         """Return a copy with ``recent_since`` fixed for this analysis date."""
@@ -63,4 +66,5 @@ class AnalysisConfig:
         d = asdict(self)
         d["recent_since"] = iso(self.recent_since)
         d["campaign_since"] = iso(self.campaign_since)
+        d["x_blocked_countries"] = sorted(self.x_blocked_countries)
         return d
